@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import os
 from functools import lru_cache
 
 from langchain.chains.combine_documents import create_stuff_documents_chain
@@ -12,6 +14,8 @@ from langchain_mistralai import MistralAIEmbeddings
 
 from app.config import settings
 
+logger = logging.getLogger(__name__)
+
 
 @lru_cache(maxsize=1)
 def get_rag_chain():
@@ -20,12 +24,24 @@ def get_rag_chain():
     if not settings.mistral_api_key:
         raise RuntimeError("Missing MistralAI in environment")
 
+    # Log LangSmith status — LangChain picks up these env vars automatically
+    if os.getenv("LANGSMITH_TRACING", "").lower() == "true":
+        project = os.getenv("LANGSMITH_PROJECT", "(default)")
+        logger.info("LangSmith tracing ENABLED — project: %s", project)
+    else:
+        logger.info("LangSmith tracing is disabled")
+
     embeddings = MistralAIEmbeddings(model="mistral-embed", api_key=settings.mistral_api_key)
 
     db = Chroma(persist_directory=str(settings.chroma_persist_dir), embedding_function=embeddings)
     retriever = db.as_retriever(search_type="similarity", search_kwargs={"k": 5})
 
-    llm = ChatGroq(model="llama-3.1-8b-instant", api_key=settings.groq_api_key)
+    llm = ChatGroq(
+        model="llama-3.1-8b-instant",
+        api_key=settings.groq_api_key,
+        # Tags help filter runs in the LangSmith dashboard
+        metadata={"project": "SelfChatBot"},
+    )
 
     contextualize_q_system_prompt = (
         "Given a chat history and the latest user question "
@@ -46,10 +62,23 @@ def get_rag_chain():
     history_aware_retriever = create_history_aware_retriever(llm, retriever, contextualize_q_prompt)
 
     qa_system_prompt = (
-        "You are an assistant that acts as me. Use the following pieces of retrieved context "
-        "to answer the question. If you don't know the answer, just say that you don't know. "
-        "Use three sentences maximum and keep the answer concise. Always respond as if you are me."
-        "\n\n"
+        "You are the virtual persona of Yash Pinjarkar, an AI/ML developer specializing in "
+        "Generative AI, Neural Networks, and modern web development. "
+        "Your tone is professional, enthusiastic, and technically precise, reflecting a passion for "
+        "open-source AI and building real-world applications.\n\n"
+        "Here are a few examples of how you should respond:\n"
+        "User: What is your main expertise?\n"
+        "Yash: I specialize in building AI-powered applications, particularly using Generative AI, "
+        "FastAPI, and LangChain! I love turning complex neural networks into scalable, interactive tools.\n\n"
+        "User: Have you worked on trading algorithms?\n"
+        "Yash: Yes! I've actually built an AI-powered Trading Agent that evaluates technical and fundamental "
+        "indicators, and I've also developed backtesting engines for Indian markets.\n\n"
+        "Instructions:\n"
+        "1. Always respond in the first person ('I', 'my') as if you are Yash.\n"
+        "2. Keep the answer concise (2-3 sentences max) unless a detailed technical explanation is required.\n"
+        "3. Use the following retrieved context to accurately answer the question. If you don't know the answer "
+        "based on the context, politely admit it but pivot to a related technical topic you do know.\n\n"
+        "Context:\n"
         "{context}"
     )
 
@@ -62,4 +91,8 @@ def get_rag_chain():
     )
 
     question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
-    return create_retrieval_chain(history_aware_retriever, question_answer_chain)
+    chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+
+    logger.info("RAG chain initialized successfully")
+    return chain
+

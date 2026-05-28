@@ -56,26 +56,25 @@ def _ensure_max_chunk_size(
     return fixed
 
 
-def build_vectorstore() -> None:
+from langchain.indexes import SQLRecordManager, index
+from langchain_community.document_loaders import DirectoryLoader, TextLoader
+
+def sync_knowledge_base() -> dict:
     # Windows: avoid noisy HuggingFace cache symlink warnings unless the user opted-in.
     if os.name == "nt" and os.getenv("HF_HUB_DISABLE_SYMLINKS_WARNING") is None:
         os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
     persist_dir = settings.chroma_persist_dir
-    info_file = settings.information_file
+    knowledge_dir = settings.knowledge_dir
 
-    if persist_dir.exists():
-        print("Vector store already exists. No need to initialize.")
-        return
-
-    print("Persistent directory does not exist. Initializing vector store...")
-
-    if not info_file.exists():
+    if not knowledge_dir.exists():
         raise FileNotFoundError(
-            f"The file {info_file} does not exist. Please check the path (INFORMATION_FILE)."
+            f"The directory {knowledge_dir} does not exist. Please check the path (KNOWLEDGE_DIR)."
         )
 
-    loader = TextLoader(str(info_file))
+    print("Loading documents from knowledge directory...")
+    # Use DirectoryLoader to load all markdown files
+    loader = DirectoryLoader(str(knowledge_dir), glob="**/*.md", loader_cls=TextLoader)
     documents = loader.load()
 
     chunk_size = 1000
@@ -97,37 +96,32 @@ def build_vectorstore() -> None:
     docs = text_splitter.split_documents(documents)
     docs = _ensure_max_chunk_size(docs, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
-    print("\n--- Document Chunks Information ---")
-    print(f"Number of document chunks: {len(docs)}")
-    print(f"Sample chunk:\n{docs[0].page_content}\n")
-
-    print("\n--- Creating embeddings ---")
     if not settings.mistral_api_key:
         raise RuntimeError("Missing MistralAI in environment")
 
     embeddings = MistralAIEmbeddings(model="mistral-embed", api_key=settings.mistral_api_key)
-    print("\n--- Finished creating embeddings ---")
-
-    print("\n--- Creating vector store ---")
-    max_retries = 3
-    retry_delay = 20
-
-    for attempt in range(max_retries):
-        try:
-            Chroma.from_documents(docs, embeddings, persist_directory=str(persist_dir))
-            print("\n--- Finished creating vector store ---")
-            break
-        except Exception as e:
-            if attempt < max_retries - 1:
-                print(
-                    f"\n--- Error creating vector store: {e}. "
-                    f"Retrying in {retry_delay}s ({attempt + 2}/{max_retries}) ---"
-                )
-                time.sleep(retry_delay)
-                retry_delay *= 2
-            else:
-                raise
-
+    
+    # Initialize VectorStore
+    vectorstore = Chroma(persist_directory=str(persist_dir), embedding_function=embeddings)
+    
+    # Initialize RecordManager
+    record_manager_db_url = f"sqlite:///{str(settings.base_dir / 'app' / 'db' / 'record_manager_cache.sql')}"
+    record_manager = SQLRecordManager(
+        "chroma/yash_knowledge", db_url=record_manager_db_url
+    )
+    record_manager.create_schema()
+    
+    print("\n--- Syncing Vector Store with SQLRecordManager ---")
+    result = index(
+        docs,
+        record_manager,
+        vectorstore,
+        cleanup="incremental",
+        source_id_key="source"
+    )
+    
+    print(f"\n--- Sync Results: {result} ---")
+    return result
 
 if __name__ == "__main__":
-    build_vectorstore()
+    sync_knowledge_base()

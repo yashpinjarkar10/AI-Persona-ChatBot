@@ -11,13 +11,4 @@ venv/
 .env
 *.log
 
-# Jupyter Notebook checkpoints
-.ipynb_checkpoints/
-
-# PyCharm project files
-.idea/
-*.iml
-
-# Private knowledge base / local data
-information.txt
-data/information.txt
+/app/knowledge

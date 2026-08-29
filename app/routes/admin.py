@@ -1,65 +1,60 @@
-"""Admin routes — protected by Supabase JWT authentication.
-
-Usage from anywhere:
-  1. Sign in via Supabase Auth (email/password, magic link, etc.)
-  2. Get your access_token (JWT) from the Supabase session
-  3. Send requests with:  Authorization: Bearer <access_token>
-
-Only the email configured in ADMIN_EMAIL is allowed.
-"""
-
 from __future__ import annotations
 
 import logging
-
 from fastapi import APIRouter, Depends, HTTPException, Request
-from supabase import create_client
 
 from app.config import settings
-from app.scripts.build_vectorstore import sync_knowledge_base
+from app.schema.admin import AdminEntryRequest, SyncResponse
+from app.services.ingestion import sync_knowledge_base, upsert_entry_in_markdown
+from app.services.supabase_client import get_supabase
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter()
 
 
-# ---------------------------------------------------------------------------
-# Supabase JWT verification dependency
-# ---------------------------------------------------------------------------
-
-
 async def verify_admin(request: Request) -> str:
-    """Verify the static API key from the X-Admin-Key header.
+    """Authenticate request using Supabase Auth JWT token or static admin key header."""
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+        try:
+            sb = get_supabase()
+            user_resp = sb.auth.get_user(token)
+            if user_resp and user_resp.user and user_resp.user.email:
+                if settings.admin_email and user_resp.user.email.lower() == settings.admin_email.lower():
+                    return user_resp.user.email
+                raise HTTPException(status_code=403, detail="User is not authorized as admin")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning("Supabase JWT verification failed: %s", e)
+            raise HTTPException(status_code=401, detail="Invalid Supabase authentication token")
 
-    Returns the key on success.
-    """
     admin_key = request.headers.get("X-Admin-Key")
-    if not admin_key:
-        raise HTTPException(status_code=401, detail="Missing X-Admin-Key header")
+    if admin_key and settings.admin_api_key and admin_key == settings.admin_api_key:
+        return "admin_key_user"
 
-    if not settings.admin_api_key:
-        raise HTTPException(status_code=500, detail="ADMIN_API_KEY not configured on the server")
-
-    if admin_key != settings.admin_api_key:
-        raise HTTPException(status_code=403, detail="Invalid admin API key")
-
-    logger.info("Admin authenticated via static API key")
-    return admin_key
+    raise HTTPException(status_code=401, detail="Missing or invalid authentication credentials")
 
 
-
-# ---------------------------------------------------------------------------
-# Admin routes
-# ---------------------------------------------------------------------------
-
-
-@router.post("/ingest", dependencies=[Depends(verify_admin)])
-async def ingest_knowledge():
-    """Re-sync the knowledge base vector store."""
+@router.post("/sync", response_model=SyncResponse, dependencies=[Depends(verify_admin)])
+async def trigger_sync():
+    """Trigger manual synchronization of personal_facts.md into Supabase documentation table."""
     try:
-        result = sync_knowledge_base()
-        logger.info("Knowledge base sync completed: %s", result)
-        return {"message": "Knowledge base synchronized successfully", "result": result}
+        stats = sync_knowledge_base()
+        return SyncResponse(message="Knowledge base synchronized successfully.", result=stats)
     except Exception as e:
         logger.exception("Knowledge base sync failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/entry", response_model=SyncResponse, dependencies=[Depends(verify_admin)])
+async def add_or_update_entry(entry: AdminEntryRequest):
+    """Add or update an entry in personal_facts.md and synchronize it with Supabase."""
+    try:
+        upsert_entry_in_markdown(entry.model_dump(), settings.facts_file_path)
+        stats = sync_knowledge_base()
+        return SyncResponse(message=f"Entry '{entry.entity_name}::{entry.title}' saved and synchronized.", result=stats)
+    except Exception as e:
+        logger.exception("Failed to add/update entry")
         raise HTTPException(status_code=500, detail=str(e))

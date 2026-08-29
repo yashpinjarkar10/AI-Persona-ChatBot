@@ -9,11 +9,6 @@ class ChatRequest(BaseModel):
     )
 
 
-class ChatResponse(BaseModel):
-    answer: str
-
-
 class StartResponse(BaseModel):
     session_id: str
     message: str
-

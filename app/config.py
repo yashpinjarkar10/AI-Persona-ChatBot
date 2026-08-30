@@ -18,7 +18,6 @@ class Settings:
     supabase_key: str | None
     supabase_service_key: str | None
     cors_allow_origins: list[str]
-    admin_email: str | None
     admin_api_key: str | None
     facts_file_path: Path
 
@@ -30,7 +29,6 @@ settings = Settings(
     supabase_key=os.getenv("SUPABASE_KEY"),
     supabase_service_key=os.getenv("SUPABASE_SERVICE_KEY"),
     cors_allow_origins=os.getenv("CORS_ALLOW_ORIGINS", "*").split(","),
-    admin_email=os.getenv("ADMIN_EMAIL"),
     admin_api_key=os.getenv("ADMIN_API_KEY"),
     facts_file_path=Path(os.getenv("FACTS_FILE_PATH", str(BASE_DIR / "personal_facts.md"))),
 )

@@ -1,40 +1,29 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.config import settings
 from app.schema.admin import AdminEntryRequest, SyncResponse
 from app.services.ingestion import sync_knowledge_base, upsert_entry_in_markdown
-from app.services.supabase_client import get_supabase
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 async def verify_admin(request: Request) -> str:
-    """Authenticate request using Supabase Auth JWT token or static admin key header."""
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header[7:].strip()
-        try:
-            sb = get_supabase()
-            user_resp = sb.auth.get_user(token)
-            if user_resp and user_resp.user and user_resp.user.email:
-                if settings.admin_email and user_resp.user.email.lower() == settings.admin_email.lower():
-                    return user_resp.user.email
-                raise HTTPException(status_code=403, detail="User is not authorized as admin")
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.warning("Supabase JWT verification failed: %s", e)
-            raise HTTPException(status_code=401, detail="Invalid Supabase authentication token")
-
+    """Authenticate admin using constant-time comparison against static API key."""
     admin_key = request.headers.get("X-Admin-Key")
-    if admin_key and settings.admin_api_key and admin_key == settings.admin_api_key:
-        return "admin_key_user"
+    if not admin_key:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            admin_key = auth_header[7:].strip()
 
-    raise HTTPException(status_code=401, detail="Missing or invalid authentication credentials")
+    if admin_key and settings.admin_api_key and secrets.compare_digest(admin_key, settings.admin_api_key):
+        return "admin"
+
+    raise HTTPException(status_code=401, detail="Missing or invalid admin API key")
 
 
 @router.post("/sync", response_model=SyncResponse, dependencies=[Depends(verify_admin)])

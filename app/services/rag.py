@@ -7,6 +7,8 @@ from langchain_mistralai import MistralAIEmbeddings
 from app.config import settings
 from app.services.supabase_client import get_supabase
 
+MODEL_NAME = "openai/gpt-oss-120b"
+
 
 def input_guardrail(query: str) -> tuple[bool, str]:
     """Validate user input against SQL injection, XSS, and malicious payloads."""
@@ -47,7 +49,7 @@ def generate_llm_response(query: str, history: list, docs: list[str]) -> str:
     if not settings.groq_api_key:
         raise RuntimeError("Missing GROQ_API_KEY")
 
-    llm = ChatGroq(model="openai/gpt-oss-120b", api_key=settings.groq_api_key)
+    llm = ChatGroq(model=MODEL_NAME, api_key=settings.groq_api_key)
     context_text = "\n\n".join(docs) if docs else "No specific documents found."
 
     system_prompt = (
@@ -81,7 +83,7 @@ def judge_grounding(query: str, response: str, docs: list[str]) -> bool:
     if not docs or not settings.groq_api_key:
         return True
 
-    llm = ChatGroq(model="openai/gpt-oss-120b", api_key=settings.groq_api_key)
+    llm = ChatGroq(model=MODEL_NAME, api_key=settings.groq_api_key)
     context_text = "\n\n".join(docs)
 
     judge_prompt = (
@@ -95,9 +97,10 @@ def judge_grounding(query: str, response: str, docs: list[str]) -> bool:
     try:
         judge_res = llm.invoke([HumanMessage(content=judge_prompt)])
         content = str(judge_res.content).strip()
-        if "```" in content:
-            content = content.split("```")[1].replace("json", "").strip()
-        data = json.loads(content)
-        return bool(data.get("grounded", True))
+        match = re.search(r"\{.*?\}", content, re.DOTALL)
+        if match:
+            data = json.loads(match.group(0))
+            return bool(data.get("grounded", True))
+        return True
     except Exception:
         return True

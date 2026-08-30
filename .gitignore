@@ -11,4 +11,4 @@ venv/
 .env
 *.log
 
-/app/knowledge
+personal_facts.md

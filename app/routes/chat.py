@@ -14,6 +14,7 @@ from app.services.rag import (
     input_guardrail,
     judge_grounding,
     output_guardrail,
+    should_use_knowledge_base,
 )
 from app.services.supabase_client import get_supabase
 
@@ -90,10 +91,15 @@ async def chat(chat_request: ChatRequest):
             yield f"data: {json.dumps({'error': error_msg, 'answer': error_msg})}\n\n"
             return
 
-        # 2. Searching Knowledge Base Status
-        yield f"data: {json.dumps({'status': 'Searching knowledge base...'})}\n\n"
+        yield f"data: {json.dumps({'status': 'Understanding query...'})}\n\n"
         history = _load_history(session_id)
-        docs = fetch_relevant_docs(query)
+        use_knowledge_base = should_use_knowledge_base(query)
+        docs: list[str] = []
+
+        # 2. Search Knowledge Base only when the query needs factual grounding.
+        if use_knowledge_base:
+            yield f"data: {json.dumps({'status': 'Searching knowledge base...'})}\n\n"
+            docs = fetch_relevant_docs(query)
 
         # 3. Generating Response Status
         yield f"data: {json.dumps({'status': 'Generating response...'})}\n\n"
@@ -109,7 +115,7 @@ async def chat(chat_request: ChatRequest):
         if not is_valid_output:
             final_response = output_error
         else:
-            is_grounded = judge_grounding(query, raw_response, docs)
+            is_grounded = not use_knowledge_base or judge_grounding(query, raw_response, docs)
             if not is_grounded:
                 final_response = "I don't have enough specific information in my knowledge base to answer that accurately."
             else:

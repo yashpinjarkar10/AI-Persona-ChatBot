@@ -27,6 +27,36 @@ def input_guardrail(query: str) -> tuple[bool, str]:
     return True, ""
 
 
+def should_use_knowledge_base(query: str) -> bool:
+    """Use the LLM to decide whether a query needs knowledge-base retrieval."""
+    if not query.strip():
+        return False
+
+    if not settings.groq_api_key:
+        return True
+
+    llm = ChatGroq(model=MODEL_NAME, api_key=settings.groq_api_key)
+    intent_prompt = (
+        "Decide if this user message needs private knowledge-base retrieval about Yash's work, projects, "
+        "skills, experience, or personal facts.\n"
+        "Return false for greetings, thanks, small talk, or normal conversational replies.\n"
+        "Return true for factual questions that should be answered from Yash's knowledge base.\n\n"
+        f"User message: {query}\n\n"
+        'Return ONLY a JSON object: {"use_knowledge_base": true} or {"use_knowledge_base": false}'
+    )
+
+    try:
+        intent_res = llm.invoke([HumanMessage(content=intent_prompt)])
+        content = str(intent_res.content).strip()
+        match = re.search(r"\{.*?\}", content, re.DOTALL)
+        if match:
+            data = json.loads(match.group(0))
+            return bool(data.get("use_knowledge_base", True))
+        return True
+    except Exception:
+        return True
+
+
 def fetch_relevant_docs(query: str, match_count: int = 5) -> list[str]:
     """Retrieve relevant context from Supabase documentation table using vector search."""
     if not settings.mistral_api_key:
